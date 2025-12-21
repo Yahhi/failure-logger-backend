@@ -1,0 +1,421 @@
+openapi: 3.0.3
+info:
+  title: Failure Uploader API
+  description: |
+    A service for mobile apps to upload failed network request bundles to S3 using presigned URLs.
+    After upload completion, the service validates the bundle and emails the project owner.
+  version: 1.0.0
+  contact:
+    name: API Support
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+  - url: https://api.example.com
+    description: Production server
+
+tags:
+  - name: Health
+    description: Health check endpoints
+  - name: Upload
+    description: Upload management endpoints
+
+security:
+  - ApiKeyAuth: []
+
+paths:
+  /health:
+    get:
+      tags:
+        - Health
+      summary: Health check
+      description: Returns the health status of the service
+      operationId: healthCheck
+      security: []
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                status: healthy
+                time: "2024-03-15T10:30:00Z"
+
+  /v1/upload-ticket:
+    post:
+      tags:
+        - Upload
+      summary: Create upload ticket
+      description: |
+        Creates a new upload ticket with presigned S3 URLs for uploading a failed network request bundle.
+        The client should use the returned presigned URLs to upload the actual data directly to S3.
+      operationId: createUploadTicket
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UploadTicketRequest'
+            example:
+              project: myapp
+              env: prod
+              request:
+                method: POST
+                url: https://api.example.com/v1/submit
+                contentType: application/json
+                bodyBytes: 12345
+                files:
+                  - name: photo
+                    filename: a.jpg
+                    contentType: image/jpeg
+                    bytes: 345678
+              client:
+                appVersion: "1.2.3"
+                platform: ios
+      responses:
+        '200':
+          description: Upload ticket created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadTicketResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: Validation failed
+                code: validation_error
+        '401':
+          description: Unauthorized - missing or invalid API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: Missing API key
+                code: unauthorized
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/upload-complete:
+    post:
+      tags:
+        - Upload
+      summary: Complete upload
+      description: |
+        Notifies the service that all files have been uploaded to S3.
+        The service will verify all required objects exist and send an email notification to the project owner.
+      operationId: completeUpload
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UploadCompleteRequest'
+            example:
+              failureId: 550e8400-e29b-41d4-a716-446655440000
+              project: myapp
+              env: prod
+              uploadedKeys:
+                - failures/myapp/prod/2024/03/15/550e8400.../envelope.json
+                - failures/myapp/prod/2024/03/15/550e8400.../request.raw
+                - failures/myapp/prod/2024/03/15/550e8400.../request.headers.json
+                - failures/myapp/prod/2024/03/15/550e8400.../checksums.json
+              sha256:
+                failures/myapp/prod/2024/03/15/550e8400.../envelope.json: abc123def456
+      responses:
+        '200':
+          description: Upload completed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadCompleteResponse'
+              example:
+                status: ok
+        '400':
+          description: Invalid request or missing objects
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                validation_error:
+                  summary: Validation error
+                  value:
+                    error: Validation failed
+                    code: validation_error
+                missing_objects:
+                  summary: Missing objects in S3
+                  value:
+                    error: Some objects were not found in S3
+                    code: missing_objects
+        '401':
+          description: Unauthorized - missing or invalid API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-Api-Key
+      description: API key for authentication. Not required when STAGE=dev.
+
+  schemas:
+    HealthResponse:
+      type: object
+      required:
+        - status
+        - time
+      properties:
+        status:
+          type: string
+          description: Health status
+          example: healthy
+        time:
+          type: string
+          format: date-time
+          description: Current server time in RFC3339 format
+          example: "2024-03-15T10:30:00Z"
+
+    UploadTicketRequest:
+      type: object
+      required:
+        - project
+        - env
+        - request
+      properties:
+        project:
+          type: string
+          description: Project identifier (alphanumeric, underscore, hyphen, max 64 chars)
+          pattern: ^[a-zA-Z0-9_-]{1,64}$
+          example: myapp
+        env:
+          type: string
+          description: Environment (alphanumeric, underscore, hyphen, max 32 chars)
+          pattern: ^[a-zA-Z0-9_-]{1,32}$
+          example: prod
+        request:
+          $ref: '#/components/schemas/RequestInfo'
+        client:
+          $ref: '#/components/schemas/ClientInfo'
+
+    RequestInfo:
+      type: object
+      required:
+        - method
+        - url
+      properties:
+        method:
+          type: string
+          description: HTTP method
+          enum: [GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS]
+          example: POST
+        url:
+          type: string
+          format: uri
+          description: The URL that was requested
+          example: https://api.example.com/v1/submit
+        contentType:
+          type: string
+          description: Content-Type of the request body
+          example: application/json
+        bodyBytes:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Size of the request body in bytes
+          example: 12345
+        files:
+          type: array
+          description: List of files attached to the request
+          items:
+            $ref: '#/components/schemas/FileInfo'
+
+    FileInfo:
+      type: object
+      required:
+        - filename
+        - bytes
+      properties:
+        name:
+          type: string
+          description: Form field name
+          example: photo
+        filename:
+          type: string
+          description: Original filename
+          example: a.jpg
+        contentType:
+          type: string
+          description: MIME type of the file
+          example: image/jpeg
+        bytes:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Size of the file in bytes
+          example: 345678
+
+    ClientInfo:
+      type: object
+      properties:
+        appVersion:
+          type: string
+          description: Version of the client application
+          example: "1.2.3"
+        platform:
+          type: string
+          description: Client platform
+          enum: [ios, android, web, desktop]
+          example: ios
+
+    UploadTicketResponse:
+      type: object
+      required:
+        - failureId
+        - s3Prefix
+        - uploads
+        - expiresInSeconds
+      properties:
+        failureId:
+          type: string
+          format: uuid
+          description: Unique identifier for this failure upload
+          example: 550e8400-e29b-41d4-a716-446655440000
+        s3Prefix:
+          type: string
+          description: S3 prefix where all files will be stored
+          example: failures/myapp/prod/2024/03/15/550e8400-e29b-41d4-a716-446655440000/
+        uploads:
+          $ref: '#/components/schemas/UploadURLs'
+        expiresInSeconds:
+          type: integer
+          description: Number of seconds until the presigned URLs expire
+          example: 900
+
+    UploadURLs:
+      type: object
+      required:
+        - envelope
+        - requestRaw
+        - requestHeaders
+        - responseRaw
+        - checksums
+      properties:
+        envelope:
+          $ref: '#/components/schemas/PresignedUpload'
+        requestRaw:
+          $ref: '#/components/schemas/PresignedUpload'
+        requestHeaders:
+          $ref: '#/components/schemas/PresignedUpload'
+        responseRaw:
+          $ref: '#/components/schemas/PresignedUpload'
+        files:
+          type: array
+          items:
+            $ref: '#/components/schemas/PresignedUpload'
+        checksums:
+          $ref: '#/components/schemas/PresignedUpload'
+
+    PresignedUpload:
+      type: object
+      required:
+        - key
+        - putUrl
+      properties:
+        key:
+          type: string
+          description: S3 object key
+          example: failures/myapp/prod/2024/03/15/550e8400.../envelope.json
+        putUrl:
+          type: string
+          format: uri
+          description: Presigned PUT URL for uploading the file
+          example: https://bucket.s3.amazonaws.com/failures/...?X-Amz-Algorithm=...
+
+    UploadCompleteRequest:
+      type: object
+      required:
+        - failureId
+        - project
+        - env
+        - uploadedKeys
+      properties:
+        failureId:
+          type: string
+          format: uuid
+          description: The failure ID from the upload ticket
+          example: 550e8400-e29b-41d4-a716-446655440000
+        project:
+          type: string
+          description: Project identifier
+          example: myapp
+        env:
+          type: string
+          description: Environment
+          example: prod
+        uploadedKeys:
+          type: array
+          description: List of S3 keys that were uploaded
+          items:
+            type: string
+          minItems: 1
+          example:
+            - failures/myapp/prod/2024/03/15/550e8400.../envelope.json
+            - failures/myapp/prod/2024/03/15/550e8400.../request.raw
+        sha256:
+          type: object
+          description: Optional SHA256 checksums for uploaded files (key -> hex digest)
+          additionalProperties:
+            type: string
+          example:
+            failures/myapp/prod/2024/03/15/550e8400.../envelope.json: abc123def456789
+
+    UploadCompleteResponse:
+      type: object
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          description: Result status
+          example: ok
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          description: Human-readable error message
+          example: Validation failed
+        code:
+          type: string
+          description: Machine-readable error code
+          example: validation_error
+        details:
+          type: string
+          description: Additional error details
+          example: "project: required"
