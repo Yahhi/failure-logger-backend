@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -115,12 +116,34 @@ func (h *Handler) UploadComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate presigned GET URL for envelope
-	keyBuilder := keys.NewBuilder(req.Project, req.Env, req.FailureID)
-	envelopeURL, err := h.presigner.PresignGet(ctx, keyBuilder.Envelope())
-	if err != nil {
-		logging.Error().Err(err).Msg("failed to generate envelope URL")
-		envelopeURL = "" // Continue without URL
+	// Locate envelope key from uploadedKeys (don't try to re-compute date-based prefixes).
+	envelopeKey := ""
+	for _, k := range req.UploadedKeys {
+		if strings.HasSuffix(k, "/envelope.json") || k == "envelope.json" {
+			envelopeKey = k
+			break
+		}
+	}
+
+	// Generate presigned GET URL for envelope (best-effort)
+	envelopeURL := ""
+	if envelopeKey != "" {
+		envelopeURL, err = h.presigner.PresignGet(ctx, envelopeKey)
+		if err != nil {
+			logging.Error().Err(err).Msg("failed to generate envelope URL")
+			envelopeURL = ""
+		}
+	}
+
+	// Read envelope.json from S3 (best-effort) to enrich email content.
+	var envObj models.Envelope
+	if envelopeKey != "" {
+		b, err := h.presigner.GetObjectBytes(ctx, envelopeKey)
+		if err != nil {
+			logging.Warn().Err(err).Str("key", envelopeKey).Msg("failed to read envelope from S3")
+		} else if err := json.Unmarshal(b, &envObj); err != nil {
+			logging.Warn().Err(err).Str("key", envelopeKey).Msg("failed to parse envelope.json")
+		}
 	}
 
 	// Send email notification
@@ -129,6 +152,10 @@ func (h *Handler) UploadComplete(w http.ResponseWriter, r *http.Request) {
 			FailureID:   req.FailureID,
 			Project:     req.Project,
 			Env:         req.Env,
+			Method:      envObj.Request.Method,
+			URL:         envObj.Request.URL,
+			AppVersion:  envObj.Client.AppVersion,
+			Platform:    envObj.Client.Platform,
 			EnvelopeURL: envelopeURL,
 		}
 

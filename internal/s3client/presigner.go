@@ -2,6 +2,7 @@ package s3client
 
 import (
 	"context"
+	"io"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -99,6 +100,25 @@ func (p *Presigner) VerifyObjectsExist(ctx context.Context, keys []string) ([]st
 		}
 	}
 	return missing, nil
+}
+
+// GetObjectBytes fetches an object from S3 and returns its full body.
+func (p *Presigner) GetObjectBytes(ctx context.Context, key string) ([]byte, error) {
+	out, err := p.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(p.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer out.Body.Close()
+
+	b, err := io.ReadAll(out.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	return b, nil
 }
 
 // Bucket returns the bucket name

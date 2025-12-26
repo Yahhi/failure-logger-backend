@@ -318,6 +318,10 @@ Minimum required permissions:
 
 Full OpenAPI 3.0 specification is available at `api/openapi.yaml`.
 
+## Client integration
+
+Flutter upload flow guide: `docs/flutter-upload-flow.md`
+
 ### View with Swagger UI
 
 You can view the API documentation using Swagger UI:
